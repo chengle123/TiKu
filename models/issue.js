@@ -1,5 +1,5 @@
 const Sequelize= require('sequelize');
-var seq = require('../config.js').seq;
+var seq = require('./config.js').seq;
 
 var issue = seq.define('issue', {
     id: {
@@ -11,7 +11,6 @@ var issue = seq.define('issue', {
     },
     title:{
         type: Sequelize.STRING,
-        allowNull:true,
         allowNull: false
     },
     qid:{

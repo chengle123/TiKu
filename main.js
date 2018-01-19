@@ -1,8 +1,10 @@
 const https = require('https');
+const http = require('http');
 const fs = require('fs');
 const cheerio = require('cheerio');
 const mysql = require('mysql');
 var path = require('path');
+var AipOcrClient = require("baidu-aip-sdk").ocr;
 
 var express = require('express');
 var bodyParser = require('body-parser');
@@ -21,8 +23,55 @@ var server = app.listen(9696, function() {
 	
 });
 
-// 爬取数据=================================================================================================
+// // 爬取数据=================================================================================================
+var num = 0;
+var page = parseInt(fs.readFileSync('./num.text',"utf-8")) || 1;
+var getAnswer = (index) => {
+	var url = 'http://answer.sm.cn/answer/detail?format=json&activity=million&sid='+index
+	var req = http.get(url,(res) => {
+        var datas = '';
+        res.on('data', (data) => {
+            datas += data;
+        })
+        res.on('end', (data) => {
+			data = JSON.parse(datas).data.question;
+			
+				console.log(data,index)
+			if(data.length > 0){
+				for(var i = 0; i<data.length;i++){
+					create({
+						title: data[i].title,
+						qid: 0,
+                        select: '',
+                        resolve: '[]',
+						answer: data[i].answer
+					});
+				}
+				num = 0;
+				writeFile('./num.text',index);
+				getAnswer(index+1);
+			}else{
+				if(num >= 30){
+					console.log('退出采集');
+					setTimeout(()=>{
+						page = parseInt(fs.readFileSync('./num.text',"utf-8")) || 1;
+						getAnswer(page);
+					},3600000);
+					return;
+				}else{
+					num ++;
+					getAnswer(index+1);
+				}
+			}
+        })
+    }).on('error',(err) => {
+        console.log('getAnswer异常原因'+err);
+    })
+    req.end();
+	
+}
 
+var exist = false;
 var getData = () => {
     var ops = {
             method: 'GET',
@@ -63,14 +112,14 @@ var getData = () => {
                 }
             }
             // writeFile(arr);
+			exist = false;
             getHtml(0,arr);            
         })
     }).on('error',(err) => {
-        console.log('异常原因1'+err);
+        console.log('getData异常原因'+err);
     })
     req.end();
 }
-
 
 
 var getHtml = (i,data) => {
@@ -89,7 +138,7 @@ var getHtml = (i,data) => {
                 $(".answer-text-full").each(function(){
                     if(!out){
                         var text = $(this).text().toUpperCase();
-                        console.log(text)
+                        // console.log(text)
                         for(var j = 0; j<data[i].resolve.length;j++){
                             if(data[i].resolve[j].indexOf(text) >= 0){
                                 data[i].answer = text;
@@ -102,20 +151,26 @@ var getHtml = (i,data) => {
                     }
                 });
 				data[i].resolve = JSON.stringify(data[i].resolve);
-				// create(data[i]);
-                console.log(data[i])
-                i++;
-                getHtml(i,data)
+				if(!exist){
+					create(data[i]);
+					console.log(data[i])
+					i++;
+					getHtml(i,data)
+				}else{
+					setTimeout(()=>{
+						getData();
+					},60000);
+				}
             })
         }).on('error',(err) => {
-            console.log('异常原因'+err);
+            console.log('getHtml异常原因'+err);
         })
         req.end();
     }else{
 		setTimeout(()=>{
 			getData();
 		},10000)
-        writeFile(data);
+        writeFile('./json.json',data);
     }
 }
 
@@ -126,50 +181,35 @@ var ClearBr = (key) => {
     key = key.replace(/\s+/g, ""); 
     return key; 
 }
-var writeFile = (data) => {
-    fs.writeFile('./json.json', JSON.stringify(data), function() {
+var writeFile = (url,data) => {
+    fs.writeFile(url, JSON.stringify(data), function() {
         console.log('打包为json.json');
     });
 }
 
-// getData();
 
 
-// 数据库操作==========================================================================
+
+// // 数据库操作==========================================================================
 
 var create = (ops) => {
 	issueList.create(ops).then((row)=>{
 		console.log('插入一条数据')
 	},(data)=>{
+		exist = true;
+		// console.log(data)
 		console.log('插入失败')
 	});
 }
 
 router.post('/getData', function(req, res) {
-	try{
-		var sql;
-		if(req.body.type == '1') {
-			sql = {where:{title:req.body.title},order:[['id', 'DESC']]};
-		}else if(req.body.type == '2'){
-			sql = {where:{answer:''},order:[['id', 'DESC']]};
-		}
-		
-		issueList.findAll(sql).then(function(rows){
-			res.json({
-				count: rows.length,
-				result: 'success',
-				data: rows,
-				msg: '查询成功'
-			});
-		})
-		
-	}catch(e) {
-		res.json({
-			result: 'error',
-			data: '',
-			msg: '查询失败'
-		});
+	var sql;
+	if(req.body.type == '1') {
+		sql = {where:{title:req.body.title},order:[['id', 'DESC']]};
+	}else if(req.body.type == '2'){
+		sql = {where:{answer:''},order:[['id', 'DESC']]};
 	}
+	routerGetData(sql,res);
 })
 router.post('/setEdit', function(req, res) {
 	try{
@@ -191,4 +231,68 @@ router.post('/setEdit', function(req, res) {
 	}
 })
 
+var routerGetData = (sql,res) => {
+	try{
+		issueList.findAll(sql).then(function(rows){
+			if(res){
+				res.json({
+					count: rows.length,
+					result: 'success',
+					data: rows,
+					msg: '查询成功'
+				});
+			}else{
+				if(rows.length > 0){
+					console.log(`问题：${ rows[0].title }\n选项：${ rows[0].select }\n答案：${ rows[0].answer }`);
+				}else{
+					console.log('没有这个问题哟！');
+				}
+			}
+		})
+		
+	}catch(e) {
+		if(res){
+			res.json({
+				result: 'error',
+				data: '',
+				msg: '查询失败'
+			});
+		}else{
+			console.log('查询失败')
+		}
+	}
+}
+
 app.use('/', router);
+
+
+// 图片识别============================================
+
+
+// 设置APPID/AK/SK
+var APP_ID = "10673570";
+var API_KEY = "9K4KgdlgQY17Moi9DpLnff35";
+var SECRET_KEY = "DnpfvwXjZMizEKIf92lYj3PGsmvtGRZh";
+
+// 新建一个对象，建议只保存一个对象调用服务接口
+var client = new AipOcrClient(APP_ID, API_KEY, SECRET_KEY);
+
+// var search = () => {
+// 	var image = fs.readFileSync("./text_area.png").toString("base64");
+// 	// 调用通用文字识别, 图片参数为本地图片
+// 	client.generalBasic(image).then(function(result) {
+// 		var text = '';
+// 		for(var i=0;i<result.words_result.length;i++){
+// 			text += result.words_result[i].words;
+// 		}
+// 		var sql = {where:{title: text.split(/[0-9]\./)[1]},order:[['id', 'DESC']]};
+// 		routerGetData(sql);
+// 	}).catch(function(err) {
+// 		// 如果发生网络错误
+// 		console.log(err);
+// 	});
+// }
+
+// search();
+getData();
+getAnswer(page);
